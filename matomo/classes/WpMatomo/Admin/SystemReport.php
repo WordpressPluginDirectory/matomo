@@ -71,35 +71,7 @@ class SystemReport {
 	const TROUBLESHOOT_RUN_UPDATER        = 'matomo_troubleshooting_action_run_updater';
 
 	private $not_compatible_plugins = [
-		'background-manager',
-		// Uses an old version of Twig and plugin is no longer maintained.
-		'all-in-one-event-calendar',
-		// Uses an old version of Twig
-		'tweet-old-post-pro',
-		// uses a newer version of monolog
-		'wp-rss-aggregator',
-		// twig conflict
-		'age-verification-for-woocommerce',
-		// see https://github.com/matomo-org/matomo-for-wordpress/issues/428
 		'minify-html-markup',
-		// see https://wordpress.org/support/topic/graphs-are-not-displayed-in-the-visits-overview-widget/#post-14298068
-		'bigbuy-wc-dropshipping-connector',
-		// see https://wordpress.org/support/topic/20-total-errors-during-this-script-execution/
-		'google-listings-and-ads',
-		// see https://wordpress.org/support/topic/20-total-errors-during-this-script-execution/
-		'post-smtp',
-		// see https://wordpress.org/support/topic/activation-of-another-plugin-breaks-matomo/#post-15045079
-		'adshares',
-		// see https://github.com/matomo-org/matomo-for-wordpress/issues/618
-		'bluehost-wordpress-plugin',
-		// see https://wordpress.org/support/topic/archive-error-with-wp-rocket/
-		'wp-rocket',
-		// see https://github.com/matomo-org/matomo-for-wordpress/issues/697
-		'backwpup',
-		// see https://github.com/matomo-org/matomo-for-wordpress/issues/710
-		'fs-poster',
-		// see https://github.com/matomo-org/matomo-for-wordpress/issues/790
-		'advanced-gutenberg',
 	];
 
 	private $valid_tabs = [ 'troubleshooting' ];
@@ -126,6 +98,11 @@ class SystemReport {
 	 */
 	private $binary;
 
+	/**
+	 * @var string
+	 */
+	private $path_to_plugin;
+
 	private static $matomo_tables;
 
 	public function __construct( Settings $settings ) {
@@ -133,6 +110,7 @@ class SystemReport {
 		$this->logger               = new Logger();
 		$this->db_settings          = new \WpMatomo\Db\Settings();
 		$this->shell_exec_available = function_exists( 'shell_exec' );
+		$this->path_to_plugin       = $this->get_abs_path_to_plugin();
 	}
 
 	public function get_not_compatible_plugins() {
@@ -430,9 +408,9 @@ class SystemReport {
 			$value    = __( 'ok', 'matomo' );
 			$comment  = '';
 			if ( ! intval( $this->get_phpcli_output( '-r "echo extension_loaded(\'mysqli\');"' ) ) ) {
-					$value    = __( 'missing', 'matomo' );
-					$is_error = true;
-					$comment  = esc_html__( 'Your PHP cli does not load the MySQLi extension. You might have archiving problems in Matomo but also others problems in your WordPress cron tasks. You should enable this extension', 'matomo' );
+				$value    = __( 'missing', 'matomo' );
+				$is_error = true;
+				$comment  = esc_html__( 'Your PHP cli does not load the MySQLi extension. You might have archiving problems in Matomo but also others problems in your WordPress cron tasks. You should enable this extension', 'matomo' );
 			}
 
 			$rows[] = [
@@ -441,9 +419,60 @@ class SystemReport {
 				'comment'  => $comment,
 				'is_error' => $is_error,
 			];
+
+			$this->check_wp_can_be_loaded_in_php_cli( $rows );
 		}
 
 		return $rows;
+	}
+
+	private function check_wp_can_be_loaded_in_php_cli( &$rows ) {
+		if ( ! $this->binary ) {
+			return;
+		}
+
+		$wp_load_path = $this->find_wp_load_path();
+		if ( ! $wp_load_path ) {
+			return;
+		}
+
+		try {
+			$cli_multi = new CliMulti();
+
+			// phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
+			$supports_async = $cli_multi->supportsAsync;
+		} catch ( \Exception $ex ) {
+			$rows[] = [
+				'name'       => esc_html__( 'PHP CLI configuration', 'matomo' ),
+				'value'      => esc_html__( 'Unexpected error', 'matomo' ),
+				'is_warning' => true,
+				'comment'    => sprintf( esc_html__( 'Could not detect whether async archiving is enabled: %s', 'matomo' ), $ex->getMessage() ),
+			];
+		}
+
+		if ( ! $supports_async ) {
+			return;
+		}
+
+		$command = "-r 'require_once( \"$wp_load_path\" );'";
+		$output  = $this->get_phpcli_output( $command );
+		if ( empty( $output ) ) {
+			$rows[] = [
+				'name'  => esc_html__( 'PHP CLI configuration', 'matomo' ),
+				'value' => esc_html__( 'Configured correctly', 'matomo' ),
+			];
+		} else {
+			$error_message = esc_html__(
+				'WordPress cannot be loaded via PHP CLI. Please ensure both WordPress and PHP CLI are correctly configured. Note: If you are using get_cfg_var() in your wp-config.php, you will need to make sure the php.ini file for PHP CLI has the correct values. You may need to contact your hosting provider for these changes to be made.',
+				'matomo'
+			);
+
+			$rows[] = [
+				'name'    => esc_html__( 'PHP CLI configuration', 'matomo' ),
+				'value'   => esc_html__( 'warning', 'matomo' ),
+				'comment' => $error_message,
+			];
+		}
 	}
 
 	private function get_phpcli_output( $phpcli_params ) {
@@ -1242,7 +1271,7 @@ class SystemReport {
 					array(
 						'method'    => 'GET',
 						'sslverify' => false,
-						'timeout'   => 2,
+						'timeout'   => defined( 'MATOMO_LOCAL_ENVIRONMENT' ) && MATOMO_LOCAL_ENVIRONMENT ? 5 : 2,
 					)
 				);
 				if ( is_array( $result ) ) {
@@ -1799,39 +1828,15 @@ class SystemReport {
 			);
 
 			$used_not_compatible = array_intersect( $active_plugins, $this->not_compatible_plugins );
-			if ( in_array( 'wp-rocket', $used_not_compatible, true ) ) {
-				if ( defined( 'WP_ROCKET_VERSION' ) && ( version_compare( WP_ROCKET_VERSION, '3.11.5' ) <= 0 ) ) {
-					unset( $used_not_compatible[ array_search( 'wp-rocket', $used_not_compatible, true ) ] );
-				}
-			}
-
 			if ( ! empty( $used_not_compatible ) ) {
 				$additional_comment = '';
-				if ( in_array( 'tweet-old-post-pro', $used_not_compatible, true ) ) {
-					$additional_comment .= '<br><br>' . esc_html__( 'A workaround for Revive Old Posts Pro may be to add the following line to your "wp-config.php"', 'matomo' ) . '<br><code>define( \'MATOMO_SUPPORT_ASYNC_ARCHIVING\', false );</code>.';
-				}
-				if ( in_array( 'post-smtp', $used_not_compatible, true ) ) {
-					$additional_comment .= '<br><br>' . esc_html__( 'The PDF report files from the email reports will be missing when the PostSMTP mode is selected but it works when the PHPMailer mode is selected.', 'matomo' );
-				}
-				if ( in_array( 'wp-rocket', $used_not_compatible, true ) ) {
-					$additional_comment .= '<br><br>' . sprintf( esc_html__( 'WP-Rocket is incompatible from version 3.12. Until fixes, please reinstall version 3.11.5 if you have a newer version. For more information please visit %s', 'matomo' ), sprintf( '<a href="%s" target="_blank">%s</a>', 'https://github.com/matomo-org/matomo-for-wordpress/wiki/Downgrade-wp-rocket-to-a-version-compatible-with-the-Matomo-plugin', esc_html__( 'How to downgrade Wp-rocket to be compatible with Matomo', 'matomo' ) ) );
-				}
-				$is_warning = false;
-				$is_error   = false;
 				if ( count( $used_not_compatible ) ) {
-					$is_warning = true;
-					$is_error   = false;
-					if ( in_array( 'cookiebot', $used_not_compatible, true ) ) {
-						$is_warning = false;
-						$is_error   = true;
-					}
-
 					$rows[] = [
 						'name'       => __( 'Not compatible plugins', 'matomo' ),
 						'value'      => count( $used_not_compatible ),
 						'comment'    => implode( ', ', $used_not_compatible ) . '<br><br>' . sprintf( esc_html__( 'Matomo may work fine when using these plugins but there may be some issues. For more information %1$sSee %2$s', 'matomo' ), '<br/>', sprintf( '<a href="%s" target="_blank">%s</a>', 'https://matomo.org/faq/wordpress/which-plugins-is-matomo-for-wordpress-known-to-be-not-compatible-with/', esc_html__( 'this FAQ', 'matomo' ) ) ) . $additional_comment,
-						'is_warning' => $is_warning,
-						'is_error'   => $is_error,
+						'is_warning' => true,
+						'is_error'   => false,
 					];
 				}
 			}
@@ -1932,6 +1937,31 @@ class SystemReport {
 		}
 
 		return $content;
+	}
+
+	private function get_abs_path_to_plugin() {
+		if ( is_dir( ABSPATH . '/wp-content/plugins/matomo' ) ) {
+			return ABSPATH . '/wp-content/plugins/matomo';
+		} elseif ( is_dir( ABSPATH . '/wp-content/mu-plugins/matomo' ) ) {
+			return ABSPATH . '/wp-content/mu-plugins/matomo';
+		} else {
+			return __DIR__ . '/../../..';
+		}
+	}
+
+	private function find_wp_load_path() {
+		$abs_path   = rtrim( ABSPATH, '/' );
+		$search_dir = $this->get_abs_path_to_plugin();
+
+		while ( ! is_file( $search_dir . '/wp-load.php' ) && strpos( $search_dir, $abs_path ) === 0 ) {
+			$search_dir = dirname( $search_dir );
+		}
+
+		if ( strpos( $search_dir, $abs_path ) !== 0 ) {
+			return null;
+		}
+
+		return $search_dir . '/wp-load.php';
 	}
 
 	private function get_php_cli_binary() {

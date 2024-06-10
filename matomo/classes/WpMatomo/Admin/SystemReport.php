@@ -24,6 +24,7 @@ use Piwik\Plugins\Diagnostics\Diagnostic\DiagnosticResult;
 use Piwik\Plugins\Diagnostics\DiagnosticService;
 use Piwik\Plugins\SitesManager\Model;
 use Piwik\Plugins\UserCountry\LocationProvider;
+use Piwik\Plugins\WordPress\WordPress;
 use Piwik\SettingsPiwik;
 use Piwik\Tracker\Failures;
 use Piwik\Version;
@@ -386,22 +387,49 @@ class SystemReport {
 		$rows = [];
 
 		if ( $this->shell_exec_available ) {
+			try {
+				$cli_multi = new CliMulti();
+
+				// phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
+				$supports_async = $cli_multi->supportsAsync;
+			} catch ( \Exception $ex ) {
+				$rows[] = [
+					'name'       => esc_html__( 'PHP CLI configuration', 'matomo' ),
+					'value'      => esc_html__( 'Unexpected error', 'matomo' ),
+					'is_warning' => true,
+					'comment'    => sprintf( esc_html__( 'Could not detect whether async archiving is enabled: %s', 'matomo' ), $ex->getMessage() ),
+				];
+			}
+
 			$phpcli_version = $this->get_phpcli_output( '-r "echo phpversion();"' );
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-			global $piwik_minimumPHPVersion;
+
+			$is_warning = false;
+			$comment    = '';
+
+			$advanced_settings_url = home_url( '/wp-admin/admin.php?page=matomo-settings&tab=advanced#matomo[disable_async_archiving]' );
+
+			$is_using_cli_archiving = ! \WpMatomo::is_async_archiving_manually_disabled() && $supports_async;
+
 			// phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-			if ( version_compare( $phpcli_version, $piwik_minimumPHPVersion ) <= 0 ) {
-				$is_error = true;
-				$comment  = sprintf( esc_html__( 'Your PHP cli version is not compatible with the %s. Please upgrade your PHP cli version, otherwise, you might have some archiving errors', 'matomo' ), sprintf( '<a href="%s" target="_blank">%s</a>', 'https://matomo.org/faq/on-premise/matomo-requirements/', esc_html__( 'Matomo requirements', 'matomo' ) ) );
-			} else {
-				$is_error = false;
-				$comment  = '';
+			if ( version_compare( $phpcli_version, PHP_VERSION ) < 0 ) {
+				if ( $is_using_cli_archiving ) {
+					$is_warning = true;
+				}
+
+				$comment = sprintf(
+					esc_html__( 'The detected PHP CLI version does not match the PHP web version. To avoid archiving errors, %1$senable archiving via HTTP requests%2$s, or %3$smanually set the path to your PHP CLI executable%4$s to the one for PHP version %5$s.', 'matomo' ),
+					'<a href="' . $advanced_settings_url . '">',
+					'</a>',
+					'<a href="https://matomo.org/faq/how-to-solve-the-error-message-your-php-cli-version-is-not-compatible-with-the-matomo-requirements/" target="_blank" rel="noreferrer noopener">',
+					'</a>',
+					PHP_VERSION
+				);
 			}
 			$rows[] = [
-				'name'     => esc_html__( 'PHP cli Version', 'matomo' ),
-				'value'    => $phpcli_version,
-				'comment'  => $comment,
-				'is_error' => $is_error,
+				'name'       => esc_html__( 'PHP CLI Version', 'matomo' ),
+				'value'      => $phpcli_version,
+				'comment'    => $comment,
+				'is_warning' => $is_warning,
 			];
 
 			$is_error = false;
@@ -417,10 +445,12 @@ class SystemReport {
 				'name'     => esc_html__( 'MySQLi support', 'matomo' ),
 				'value'    => $value,
 				'comment'  => $comment,
-				'is_error' => $is_error,
+				'is_error' => $is_using_cli_archiving ? $is_error : false,
 			];
 
-			$this->check_wp_can_be_loaded_in_php_cli( $rows );
+			if ( $supports_async ) {
+				$this->check_wp_can_be_loaded_in_php_cli( $rows );
+			}
 		}
 
 		return $rows;
@@ -433,24 +463,6 @@ class SystemReport {
 
 		$wp_load_path = $this->find_wp_load_path();
 		if ( ! $wp_load_path ) {
-			return;
-		}
-
-		try {
-			$cli_multi = new CliMulti();
-
-			// phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
-			$supports_async = $cli_multi->supportsAsync;
-		} catch ( \Exception $ex ) {
-			$rows[] = [
-				'name'       => esc_html__( 'PHP CLI configuration', 'matomo' ),
-				'value'      => esc_html__( 'Unexpected error', 'matomo' ),
-				'is_warning' => true,
-				'comment'    => sprintf( esc_html__( 'Could not detect whether async archiving is enabled: %s', 'matomo' ), $ex->getMessage() ),
-			];
-		}
-
-		if ( ! $supports_async ) {
 			return;
 		}
 

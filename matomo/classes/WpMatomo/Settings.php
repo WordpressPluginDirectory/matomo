@@ -35,6 +35,11 @@ class Settings {
 	const SITE_CURRENCY                        = 'site_currency';
 	const NETWORK_CONFIG_OPTIONS               = 'config_options';
 	const DISABLE_ASYNC_ARCHIVING_OPTION_NAME  = 'matomo_disable_async_archiving';
+	const USE_SESSION_VISITOR_ID_OPTION_NAME   = 'use_session_visitor_id';
+
+	// NOTE: this is not a setting value, but is stored with setting values to avoid
+	// adding an extra get_option call to every WordPress backoffice request.
+	const INSTANCE_COMPONENTS_INSTALLED = 'instance-components-installed';
 
 	public static $is_doing_action_tracking_related = false;
 	/**
@@ -120,9 +125,10 @@ class Settings {
 	 * @var array
 	 */
 	private $default_blog_settings = [
-		'noscript_code'                        => '',
-		'tracking_code'                        => '',
-		self::OPTION_LAST_TRACKING_CODE_UPDATE => 0,
+		'noscript_code'                          => '',
+		'tracking_code'                          => '',
+		self::OPTION_LAST_TRACKING_CODE_UPDATE   => 0,
+		self::USE_SESSION_VISITOR_ID_OPTION_NAME => false,
 	];
 
 	private $global_settings = [];
@@ -486,5 +492,17 @@ class Settings {
 
 	public function is_async_archiving_disabled_by_option() {
 		return (bool) $this->get_global_option( self::DISABLE_ASYNC_ARCHIVING_OPTION_NAME );
+	}
+
+	public function get_matomo_major_version() {
+		$core_version = $this->get_global_option( 'core_version' );
+		$core_version = isset( $core_version ) ? $core_version : '';
+
+		$parts = explode( '.', $core_version );
+		if ( empty( $parts ) ) {
+			return 0;
+		}
+
+		return (int) $parts[0];
 	}
 }

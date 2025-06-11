@@ -91,15 +91,11 @@ class Common
      */
     public static function unprefixTable($table)
     {
-        static $prefixTable = null;
-        if (is_null($prefixTable)) {
-            $prefixTable = \Piwik\Config::getInstance()->database['tables_prefix'];
-        }
+        $prefixTable = \Piwik\Config::getInstance()->database['tables_prefix'];
         if (empty($prefixTable) || strpos($table, $prefixTable) !== 0) {
             return $table;
         }
-        $count = 1;
-        return str_replace($prefixTable, '', $table, $count);
+        return substr($table, strlen($prefixTable));
     }
     /*
      * Tracker
@@ -299,7 +295,7 @@ class Common
      *
      * **Implementation Details**
      *
-     * - [htmlspecialchars](http://php.net/manual/en/function.htmlspecialchars.php) is used to escape text.
+     * - [htmlspecialchars](https://php.net/manual/en/function.htmlspecialchars.php) is used to escape text.
      * - Single quotes are not escaped so **Piwik's amazing community** will still be
      *   **Piwik's amazing community**.
      * - Use of the `magic_quotes` setting will not break this method.
@@ -593,7 +589,7 @@ class Common
      * Convert hexadecimal representation into binary data.
      * !! Will emit warning if input string is not hex!!
      *
-     * @see http://php.net/bin2hex
+     * @see https://php.net/bin2hex
      *
      * @param string $str Hexadecimal representation
      * @return string

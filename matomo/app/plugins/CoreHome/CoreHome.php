@@ -102,6 +102,7 @@ class CoreHome extends \Piwik\Plugin
         $stylesheets[] = "plugins/Morpheus/stylesheets/base/icons.css";
         $stylesheets[] = "plugins/Morpheus/stylesheets/base.less";
         $stylesheets[] = "plugins/Morpheus/stylesheets/main.less";
+        $stylesheets[] = "plugins/CoreHome/stylesheets/a11y.less";
         $stylesheets[] = "plugins/CoreHome/stylesheets/coreHome.less";
         $stylesheets[] = "plugins/CoreHome/stylesheets/dataTable.less";
         $stylesheets[] = "plugins/CoreHome/stylesheets/cloud.less";
@@ -365,12 +366,18 @@ class CoreHome extends \Piwik\Plugin
         $translationKeys[] = 'General_YouAreCurrentlyUsing';
         $translationKeys[] = 'General_Copy';
         $translationKeys[] = 'General_CopiedToClipboard';
+        $translationKeys[] = 'CoreHome_ReportConfiguration';
         // add admin menu translations
         if (SettingsPiwik::isMatomoInstalled() && Common::getRequestVar('module', '') != 'CoreUpdater' && Piwik::isUserHasSomeViewAccess()) {
+            /*
+             * Executed as super user to ensure we are able to add translations for all menu entries that might be displayed.
+             */
             Access::doAsSuperUser(function () use(&$translationKeys) {
                 $menu = MenuAdmin::getInstance()->getMenu();
                 foreach ($menu as $level1 => $level2) {
-                    $translationKeys[] = $level1;
+                    if (strpos($level1, '_') !== \false) {
+                        $translationKeys[] = $level1;
+                    }
                     foreach ($level2 as $name => $params) {
                         if (strpos($name, '_') !== \false) {
                             $translationKeys[] = $name;

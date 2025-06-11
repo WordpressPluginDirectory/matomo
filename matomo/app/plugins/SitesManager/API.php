@@ -13,6 +13,8 @@ use Exception;
 use Matomo\Network\IPUtils;
 use Piwik\Access;
 use Piwik\Common;
+use Piwik\Concurrency\Lock;
+use Piwik\Concurrency\LockBackend;
 use Piwik\Config;
 use Piwik\Container\StaticContainer;
 use Piwik\DataAccess\Model as CoreModel;
@@ -54,7 +56,7 @@ use Piwik\Validators\WhitelistedValue;
  * Some methods will affect all websites globally: "setGlobalExcludedIps" will set the list of IPs to be excluded on all websites,
  * "setGlobalExcludedQueryParameters" will set the list of URL parameters to remove from URLs for all websites.
  * The existing values can be fetched via "getExcludedIpsGlobal" and "getExcludedQueryParametersGlobal".
- * See also the documentation about <a href='http://matomo.org/docs/manage-websites/' rel='noreferrer' target='_blank'>Managing Websites</a> in Matomo.
+ * See also the documentation about <a href='https://matomo.org/docs/manage-websites/' rel='noreferrer' target='_blank'>Managing Websites</a> in Matomo.
  * @method static \Piwik\Plugins\SitesManager\API getInstance()
  */
 class API extends \Piwik\Plugin\API
@@ -351,7 +353,7 @@ class API extends \Piwik\Plugin\API
      * For the superUser it returns all the websites in the database.
      *
      * @param bool|int $limit Specify max number of sites to return
-     * @param bool $_restrictSitesToLogin Hack necessary when running scheduled tasks, where "Super User" is forced, but sometimes not desired, see #3017
+     * @param bool|string $_restrictSitesToLogin Hack necessary when running scheduled tasks, where "Super User" is forced, but sometimes not desired, see #3017
      * @return array array for each site, an array of information (idsite, name, main_url, etc.)
      */
     public function getSitesWithAtLeastViewAccess($limit = \false, $_restrictSitesToLogin = \false)
@@ -665,7 +667,7 @@ class API extends \Piwik\Plugin\API
     /**
      * Delete a website from the database, given its Id. The method deletes the actual site as well as some associated
      * data. However, it does not delete any logs or archives that belong to this website. You can delete logs and
-     * archives for a site manually as described in this FAQ: http://matomo.org/faq/how-to/faq_73/ .
+     * archives for a site manually as described in this FAQ: https://matomo.org/faq/how-to/faq_73/ .
      *
      * Requires Super User access.
      *
@@ -680,27 +682,31 @@ class API extends \Piwik\Plugin\API
         if (Common::getRequestVar('force_api_session', 0)) {
             $this->confirmCurrentUserPassword($passwordConfirmation);
         }
-        $idSites = $this->getSitesId();
-        if (!in_array($idSite, $idSites)) {
-            throw new Exception("website id = {$idSite} not found");
-        }
-        $nbSites = count($idSites);
-        if ($nbSites == 1) {
-            throw new Exception($this->translator->translate("SitesManager_ExceptionDeleteSite"));
-        }
-        $this->getModel()->deleteSite($idSite);
-        $coreModel = new CoreModel();
-        $coreModel->deleteInvalidationsForSites([$idSite]);
-        /**
-         * Triggered after a site has been deleted.
-         *
-         * Plugins can use this event to remove site specific values or settings, such as removing all
-         * goals that belong to a specific website. If you store any data related to a website you
-         * should clean up that information here.
-         *
-         * @param int $idSite The ID of the site being deleted.
-         */
-        Piwik::postEvent('SitesManager.deleteSite.end', [$idSite]);
+        $lock = new Lock(StaticContainer::get(LockBackend::class), 'SitesManager.deleteSite');
+        // we use the same lock id for all requests to ensure only one site is removed at a time and the check for one remaining site can't be bypassed
+        $lock->execute('delete', function () use($idSite) {
+            $idSites = $this->getSitesId();
+            if (!in_array($idSite, $idSites)) {
+                throw new Exception("website id = {$idSite} not found");
+            }
+            $nbSites = count($idSites);
+            if ($nbSites == 1) {
+                throw new Exception($this->translator->translate("SitesManager_ExceptionDeleteSite"));
+            }
+            $this->getModel()->deleteSite($idSite);
+            $coreModel = new CoreModel();
+            $coreModel->deleteInvalidationsForSites([$idSite]);
+            /**
+             * Triggered after a site has been deleted.
+             *
+             * Plugins can use this event to remove site specific values or settings, such as removing all
+             * goals that belong to a specific website. If you store any data related to a website you
+             * should clean up that information here.
+             *
+             * @param int $idSite The ID of the site being deleted.
+             */
+            Piwik::postEvent('SitesManager.deleteSite.end', [$idSite]);
+        });
     }
     private function checkValidTimezone($timezone)
     {
@@ -1112,7 +1118,7 @@ class API extends \Piwik\Plugin\API
     public function setGlobalQueryParamExclusion(string $exclusionType, ?string $queryParamsToExclude = null) : void
     {
         Piwik::checkUserHasSuperUserAccess();
-        $queryParamsToExclude = $this->checkAndReturnCommaSeparatedStringList($queryParamsToExclude);
+        $queryParamsToExclude = $this->checkAndReturnCommaSeparatedStringList($queryParamsToExclude ?? '');
         $whiteListValidator = new WhitelistedValue(\Piwik\Plugins\SitesManager\SitesManager::URL_PARAM_EXCLUSION_TYPES);
         $whiteListValidator->validate($exclusionType);
         if ($exclusionType === \Piwik\Plugins\SitesManager\SitesManager::URL_PARAM_EXCLUSION_TYPE_NAME_CUSTOM && empty($queryParamsToExclude)) {
@@ -1178,8 +1184,6 @@ class API extends \Piwik\Plugin\API
      * @throws Exception
      * @see getKeepURLFragmentsGlobal. If null, the existing value will
      *                                   not be modified.
-     *
-     * @return bool true on success
      */
     public function updateSite($idSite, $siteName = null, $urls = null, $ecommerce = null, $siteSearch = null, $searchKeywordParameters = null, $searchCategoryParameters = null, $excludedIps = null, $excludedQueryParameters = null, $timezone = null, $currency = null, $group = null, $startDate = null, $excludedUserAgents = null, $keepURLFragments = null, $type = null, $settingValues = null, $excludeUnknownUrls = null, $excludedReferrers = null)
     {
@@ -1198,9 +1202,7 @@ class API extends \Piwik\Plugin\API
         if (!isset($settingValues)) {
             $settingValues = [];
         }
-        if (empty($coreProperties)) {
-            $coreProperties = [];
-        }
+        $coreProperties = [];
         $coreProperties = $this->setSettingValue('urls', $urls, $coreProperties, $settingValues);
         $coreProperties = $this->setSettingValue('group', $group, $coreProperties, $settingValues);
         $coreProperties = $this->setSettingValue('ecommerce', $ecommerce, $coreProperties, $settingValues);
@@ -1265,7 +1267,7 @@ class API extends \Piwik\Plugin\API
         $minDateSql = $minDate->subDay(1)->getDatetime();
         $this->getModel()->updateSiteCreatedTime($idSites, $minDateSql);
     }
-    private function checkAndReturnCommaSeparatedStringList($parameters)
+    private function checkAndReturnCommaSeparatedStringList(string $parameters) : string
     {
         $parameters = trim($parameters);
         if (empty($parameters)) {
